@@ -1,0 +1,13 @@
+region: us-east-1
+instance_type: t2.micro
+vpc_id: vpc-f83d2f9a
+public_subnet_id: subnet-4c102138
+
+#Define list of private IP address so, only the instances in those CIDR will be able to do SSH into machine if needed
+private_ip_cidr: 0.0.0.0/0
+private_subnet_id: subnet-4c102138
+instance_count: 1
+ami: ami-0ff8a91507f77f867  # Amazon Linux AMI 2018.03.0
+
+tag: web_server2
+pem_key: keypairname # key.pem

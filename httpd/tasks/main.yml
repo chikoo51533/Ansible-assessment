@@ -1,0 +1,32 @@
+- name: Install yum packages using a list
+  yum:
+    state: present
+    name: 
+      - httpd
+      - mod_ssl
+      - openssl
+
+- name: Transfer the script
+  run_once: true
+  copy: src=static_files/ssl_script.sh dest=/etc/httpd/ mode=0777
+
+- name: Execute the script
+  run_once: true
+  command: sh /etc/httpd/ssl_script.sh
+  notify:
+    - start httpd
+
+- name: Upload httpd.conf file for host
+  copy: src=static_files/httpd.conf dest=/etc/httpd/conf/ mode=0644
+  notify:
+    - start httpd
+
+- name: Upload default index.html for host
+  copy: src=static_files/index.html dest=/var/www/html/ mode=0644
+
+- name: start httpd
+  service: 
+    name: httpd 
+    state: started
+
+

@@ -1,0 +1,144 @@
+---
+- name: A simple Load Balanced AWS server
+  hosts: localhost 
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: Create security group
+      ec2_group:
+        name: "webserver_sg"
+        description: "webserver_sg"
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp  # ssh
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ private_ip_cidr }}"
+          - proto: tcp  # http
+            from_port: 80
+            to_port: 80
+            cidr_ip: "{{ private_ip_cidr }}"
+          - proto: tcp  # https
+            from_port: 443
+            to_port: 443
+            cidr_ip: "{{ private_ip_cidr }}"
+        rules_egress:
+          - proto: all
+            cidr_ip: "{{ private_ip_cidr }}"
+      register: webserver_sg
+
+    - name: Create an EC2 instance
+      ec2:
+        key_name: "{{ pem_key }}"
+        region: "{{ region }}"
+        group_id: "{{ webserver_sg.group_id }}"
+        instance_type: "{{ instance_type }}"
+        image: "{{ ami }}"
+        wait: yes
+        instance_tags:
+            Name: "{{ tag }}"
+        count_tag:
+            Name: "{{ tag }}"
+        exact_count: "{{ instance_count }}"
+        vpc_subnet_id: "{{ private_subnet_id }}"
+        assign_public_ip: yes
+      register: ec2
+
+    - name: Gather EC2 Details
+      ec2_instance_facts:
+        ec2_region: "{{ region }}"
+        filters:
+          instance-state-name: running
+          "tag:Name": "{{ tag }}"
+      register: ec2_config
+
+    - name: wait for the servers to appear on the network
+      wait_for: 
+        host: "{{ item.public_dns_name }}"
+        port: 22 
+        delay: 10 
+        timeout: 180
+        state: started
+      with_items: "{{ ec2.instances }}"
+
+    - name: Add new instance to host group
+      add_host:
+        hostname: "{{ item.public_dns_name }}"
+        groupname: webservers
+      with_items: "{{ ec2_config.instances }}"
+    
+- name: httpd Installation
+  hosts: webservers
+  remote_user: ec2-user
+  become: true
+  # become_method: sudo
+  gather_facts: True
+  roles:
+    - httpd
+
+- name: Creating Load balancer
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: ELB Security Group
+      ec2_group:
+        name: "elb_sg"
+        description: "elb_sg"
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp  # http
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp  # https
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+      register: elb_sg
+
+    - name: Upload Certificate
+      iam_cert:
+        name: elb_cert1
+        state: present
+        cert: httpd/static_files/my-aws-public.crt
+        key: httpd/static_files/my-aws-private.key
+        dup_ok: true
+      register : myoutput
+
+    - name: Set ARN for passed in domain
+      set_fact:
+        project_arn: "{{ myoutput.arn }}"
+  
+    - name: Create CLB if not exists
+      ec2_elb_lb:
+        name: httpd-loadbalancer
+        state: present
+        region: us-east-1
+        security_group_ids: "{{ elb_sg.group_id }}"
+        subnets:
+          - "{{ public_subnet_id }}"
+        listeners:
+          - protocol: http
+            load_balancer_port: 80
+            instance_port: 80
+          - protocol: https
+            load_balancer_port: 443
+            instance_protocol: https 
+            instance_port: 443
+            ssl_certificate_id: "{{ project_arn }}"
+      register: aws-elb-demo
+
+    - name: Add EC2 instances to LoadBalancer
+      local_action: ec2_elb
+      args:
+        instance_id: "{{ item.id }}"
+        ec2_elbs: httpd-loadbalancer
+        state: present
+        region: us-east-1
+      with_items: "{{ ec2.tagged_instances }}"
